@@ -1,0 +1,267 @@
+---
+title: "Analisis de catalogo de venta"
+author: "Luis Espinosa Bouvy"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+     html_document:
+          keep_md: yes
+---
+     
+```{r setup, include = FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+
+```{r leer}
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(lubridate))
+suppressPackageStartupMessages(require(plotly))
+suppressPackageStartupMessages(require(pander))
+suppressPackageStartupMessages(require(ISOweek))
+
+pares.raw <- read.csv("paresperugia.csv")%>%
+     select("ESTILO" = vcestil,"MATERIAL"  = vcmater, "COLOR" = vccolor, "ESTILO.MAT.COL" = estilo.mat.col,
+            "PROGRAMA" = programa, "FAMILIA" = asignado, "FECHA.MONTADO" = fmontado, "MONTADO"= qfmonta,
+            "PARES" = totpares)
+habilita.raw <- read.csv("habilita.csv")%>%
+     mutate("ESTILO.MAT.COL" = paste0(estilo,mater,color), "STATUS" = 1)%>%
+     select(ESTILO.MAT.COL, STATUS,"COLECCION" = colecc, "LINEA"= linea)
+
+deshabilita.raw <- read.csv("deshabil.csv")%>%
+     mutate("ESTILO.MAT.COL" = paste0(estilo,mater,color), "STATUS" = 0)%>%
+     select(ESTILO.MAT.COL, STATUS, "COLECCION" = colecc, "LINEA"= linea)
+
+status <- rbind(habilita.raw, deshabilita.raw)
+
+datos.raw <- merge(pares.raw ,status, by = "ESTILO.MAT.COL")
+
+alt.sin.venta <- merge(status, pares.raw, by = "ESTILO.MAT.COL", all = TRUE)%>%
+     filter(STATUS ==1 & is.na(FECHA.MONTADO))
+
+datos.raw$FECHA.MONTADO <- dmy(datos.raw$FECHA.MONTADO)
+datos.raw <- datos.raw%>%
+     mutate("SEMANA" = ISOweek(FECHA.MONTADO),
+            "DIA.SEM" = weekdays(FECHA.MONTADO),
+            "YEAR"= year(FECHA.MONTADO))
+
+#status del estilo
+status.estilo <- datos.raw%>%select(ESTILO, STATUS)
+temp <- unique(status.estilo[,c("ESTILO", "STATUS")])
+status.estilo <- temp%>%
+     group_by(ESTILO)%>%
+     summarise("STATUS" = max(STATUS))
+
+#status del linea
+status.linea <- datos.raw%>%select(LINEA, STATUS)
+temp <- unique(status.linea[,c("LINEA", "STATUS")])
+status.linea <- temp%>%
+     group_by(LINEA)%>%
+     summarise("STATUS" = max(STATUS))
+
+#linea del estilo
+linea <- datos.raw%>%select(ESTILO, LINEA)
+
+fin <- max(datos.raw$FECHA.MONTADO)
+ini <- min(datos.raw$FECHA.MONTADO)
+meses <- as.double(difftime(fin, ini, units = "days")/365*12)
+semanas <- as.double(difftime(fin, ini, units = "weeks"))
+estilos.por.sem <- datos.raw%>%group_by(YEAR, SEMANA)%>%mutate("cuantos" = n_distinct(ESTILO))
+
+lineas <- length(unique(habilita.raw$LINEA))
+estilos <- length(unique(datos.raw[datos.raw$STATUS == 1,]$ESTILO))
+alternativas <- length(unique(habilita.raw$ESTILO.MAT.COL))
+
+```
+
+
+Del **`r ini` al `r fin`** se tiene el siguiente resumen:
+
+Semanas: `r semanas`  
+Pares:   `r sum(datos.raw$PARES)`  
+Promedio mensual: `r format.AsIs(ceiling(sum(datos.raw$PARES)/meses))`  
+Pares por semana: `r format.AsIs(ceiling(sum(datos.raw$PARES)/semanas))`  
+Estilos producidos: `r length(unique(datos.raw$ESTILO))`  
+Promedio estilos por semana: `r round(mean(estilos.por.sem$cuantos),2)`  
+Alternativas producidas: `r length(unique(datos.raw$ESTILO.MAT.COL))`  
+Lineas habilitadas: `r lineas`  
+Estilos habilitados: `r estilos`  
+Alternativas habilitadas: `r alternativas`  
+Alternativas sin venta:  `r nrow(alt.sin.venta)`  (`r ceiling(nrow(alt.sin.venta)/alternativas*100)` %)
+
+
+```{r venta-por-linea, fig.width=10, fig.height=6}
+#pares por linea
+por.estilo <- datos.raw%>%
+     group_by(LINEA)%>%
+     summarise("Total.pares" = sum(PARES))%>%
+     arrange(Total.pares)%>%
+     merge(status.linea, by = "LINEA")
+     por.estilo$STATUS <- factor(por.estilo$STATUS)
+
+ggplotly(
+     ggplot(por.estilo, aes(reorder(LINEA,-Total.pares), Total.pares, fill = STATUS)) + 
+          geom_bar(stat = "identity") + 
+          xlab("LINEA") +
+          theme(axis.text.x = element_text(size = 7)) +
+          ggtitle("Pares vendidos por linea")
+     
+)
+
+
+```
+
+```{r mejores-lineas-sem, fig.width=10, fig.height=6}
+
+#venta de LINEAS habilitados
+ultima.venta <- datos.raw%>%
+     filter(STATUS == 1)%>%
+     group_by(LINEA,SEMANA)%>%
+     summarise("temp" = sum(PARES))%>%
+     group_by(LINEA)%>%
+     summarise("Pares.promedio" = floor(mean(temp)))%>%
+     arrange(desc(Pares.promedio))
+
+
+ggplotly(
+     ggplot(ultima.venta, aes(reorder(LINEA, -Pares.promedio), Pares.promedio)) + 
+          geom_bar(stat = 'identity', fill = "deepskyblue3") + 
+          xlab("")+ 
+          ggtitle("Venta promedio por semana por linea") + 
+          theme(axis.text.x = element_text(size = 7, angle = 90))
+)
+
+
+```
+
+## Fecha de última facturacion por linea
+```{r ultima-venta-linea, fig.width=10, fig.height=6}
+
+#venta de lineas habilitados
+ultima.venta <- datos.raw%>%
+     filter(STATUS == 1)%>%
+     group_by(LINEA)%>%
+     summarise("Ultima.produccion" = max(FECHA.MONTADO))%>%
+     arrange(Ultima.produccion)%>%
+     mutate("Dias.desde.ultima" = Sys.Date()- Ultima.produccion)%>%
+     filter(Dias.desde.ultima > 60)
+
+pander(ultima.venta)
+
+
+```
+
+```{r venta-por-estilo, fig.width=10, fig.height=6}
+
+#pares por estilo
+por.estilo <- datos.raw%>%
+     group_by(ESTILO, LINEA)%>%
+     summarise("Total.pares" = sum(PARES))%>%
+     arrange(desc(Total.pares))%>%
+     merge(status.estilo, by = "ESTILO", all.y = T)
+     por.estilo$STATUS <- factor(por.estilo$STATUS)
+
+ggplotly(
+     ggplot(por.estilo, aes(reorder(ESTILO,-Total.pares), Total.pares, col = STATUS, fill = LINEA)) + 
+          geom_bar(stat = "identity") + 
+          xlab("ESTILOS") +
+          theme(axis.text.x = element_text(size = 7), legend.position = "none") +
+          ggtitle("Pares vendidos por estilo") 
+)
+
+```
+
+```{r mejores-estilos-sem, fig.width=10, fig.height=6}
+
+#venta de alternativas habilitados
+ultima.venta <- datos.raw%>%
+     filter(STATUS == 1)%>%
+     group_by(ESTILO,SEMANA)%>%
+     summarise("temp" = sum(PARES))%>%
+     group_by(ESTILO)%>%
+     summarise("Pares.promedio" = floor(mean(temp)))%>%
+     arrange(desc(Pares.promedio))
+
+
+ggplotly(
+     ggplot(ultima.venta, aes(reorder(ESTILO, -Pares.promedio), Pares.promedio)) + 
+          geom_bar(stat = 'identity', fill = "deepskyblue4") + 
+          xlab("")+ 
+          ggtitle("Venta promedio por semana por estilo") + 
+          theme(axis.text.x = element_text(size = 7, angle = 90))
+)
+
+
+```
+
+## Fecha de última facturacion por estilo
+```{r ultima-venta-estilo, fig.width=10, fig.height=6}
+
+#venta de alternativas habilitados
+ultima.venta <- datos.raw%>%
+     filter(STATUS == 1)%>%
+     group_by(ESTILO, LINEA)%>%
+     summarise("Ultima.produccion" = max(FECHA.MONTADO))%>%
+     arrange(Ultima.produccion)%>%
+     mutate("Dias.desde.ultima" = Sys.Date()- Ultima.produccion)%>%
+     filter(Dias.desde.ultima > 60)
+
+pander(ultima.venta)
+
+
+```
+
+```{r venta-estilos-habilitados, fig.width=10, fig.height=6}
+
+#venta de alternativas habilitados
+por.alternativa <- datos.raw%>%
+     group_by(ESTILO.MAT.COL, LINEA, STATUS)%>%
+     summarise("Total.pares" = sum(PARES))%>%
+     arrange(desc(Total.pares))
+     por.alternativa$STATUS <- factor(por.alternativa$STATUS)
+     
+ggplotly(
+     ggplot(por.alternativa, aes(reorder(ESTILO.MAT.COL,-Total.pares), 
+                                 Total.pares, col = STATUS, fill = LINEA)) + 
+          geom_bar(stat = "identity") + 
+          xlab("ESTILO-MATERIA-COLOR") +
+          theme(axis.text.x = element_text(size = 7), legend.position = "none") +
+          ggtitle("Pares vendidos por alternativa")
+     
+)
+
+
+```
+
+## Fecha de última facturacion por alternativa
+```{r ultima-venta-alternativa, fig.width=10, fig.height=6}
+
+#venta de alternativas habilitados
+ultima.venta <- datos.raw%>%
+     filter(STATUS == 1)%>%
+     group_by(ESTILO.MAT.COL, LINEA)%>%
+     summarise("Ultima.produccion" = max(FECHA.MONTADO))%>%
+     arrange(Ultima.produccion)%>%
+     mutate("Dias.desde.ultima" = Sys.Date()- Ultima.produccion)%>%
+     filter(Dias.desde.ultima > 60)
+
+pander(ultima.venta)
+
+
+```
+
+## Alternativas habilitadas sin venta en el periodo
+```{r alertativas-sin-venta, fig.width=10, fig.height=6}
+
+
+pander(alt.sin.venta%>%select(ESTILO.MAT.COL, COLECCION, LINEA)%>%arrange(COLECCION))
+
+
+```
+
+
+
